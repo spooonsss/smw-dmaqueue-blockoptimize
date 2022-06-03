@@ -9,13 +9,13 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 if read1($00FFD5) == $23
-	sa1rom	
+	sa1rom
 	!sa1 = 1
 	!base1	= $3000
 	!base2	= $6000
 	!base3	= $000000
-else	
-	lorom	
+else
+	lorom
 	!sa1 = 0
 	!base1	= $0000
 	!base2	= $0000
@@ -24,7 +24,7 @@ endif
 	!dp		= !base1
 	!addr	= !base2
 	!bank	= !base3
-	
+
 ;You can change the ram here if needed
 ;lorom
 !VRAMUploadTblSmall = $7FB700
@@ -97,6 +97,18 @@ org $00C17F
 Return:
 	RTS
 
+; We want an NMI hijack that runs in most game modes (also mode7), not in lag frames, and is late enough
+; This hijack is at the end of ControllerUpdate
+; UberASM NMI is too early due to LM hijack loading tilemap upon e.g. horizontal scroll:
+;  org $0586F7 JML $1FB12C  map16 data is used to load tilemap data into buffer at $7F820B ("CheckLayerUpdates")
+;  Then sprite code (e.g. growing pipe) runs, which populates !VRAMUploadTblSmall
+;  UberASM NMI hijack runs, uploading !VRAMUploadTblSmall to vram
+;  org $008209 JSL LM NMI hijack runs, using pre-update map16 tilemap data ("UploadBGData")
+;      $1FA64D STA $4322     [004322] A:820b
+;      $1FA655 STY $420B
+
+org $0086C1
+	autoclean JML NMIHijack
 
 freecode
 
@@ -108,7 +120,7 @@ SetLayer1Addr:
 	AND #$07FF
 	ORA #$3000
 .End
-	JML StoreAddress
+	JML StoreAddress|!bank
 
 SetLayer2Addr:
 	LDA $06
@@ -116,8 +128,104 @@ SetLayer2Addr:
 	CMP #$3800
 	BCS .End
 	AND #$07FF
-	ORA #$3000
-	CLC
-	ADC #$0800
+	ORA #$3800
 .End
-	JML StoreAddress
+	JML StoreAddress|!bank
+
+NMIHijack:
+	PHP
+	REP #$10
+	LDX !VRAMUploadTblSmallIndex
+	BEQ .SkipUploadSmallTable
+	JSR RunVRAMUploadSmall
+.SkipUploadSmallTable
+	LDX !VRAMUploadTblLargeIndex
+	BEQ .SkipUploadLargeTable
+	JSR RunVRAMUploadLarge
+.SkipUploadLargeTable
+	PLP
+	; restore code:
+	LDA.w $0DA8,X				;$0086C1	|\ Set up $18.
+	STA $18						;$0086C4	|/
+	JML $0086C6|!bank
+
+RunVRAMUploadSmall:
+	LDA #$80
+	STA $2115
+	STX $4325
+	LDX #$1604
+	STX $4320
+	LDX.w #!VRAMUploadTblSmall
+	STX $4322
+	LDA.b #!VRAMUploadTblSmall>>16
+	STA $4324
+	LDA #$04
+	STA $420B
+	LDX #$0000
+	STX !VRAMUploadTblSmallIndex
+	RTS
+
+RunVRAMUploadLarge:
+	PHB
+	PEA.w (!VRAMUploadTblLarge>>16)|(!VRAMUploadTblLarge>>8)
+	PLB
+	PLB
+	REP #$20
+	STZ $00
+	LDX #$0000
+.Loop
+	LDA.w !VRAMUploadTblLarge+10,x
+	BEQ .NoDelay
+	DEC.w !VRAMUploadTblLarge+10,x
+	LDY $00
+	LDA.w !VRAMUploadTblLarge,x
+	STA.w !VRAMUploadTblLarge,y
+	LDA.w !VRAMUploadTblLarge+2,x
+	STA.w !VRAMUploadTblLarge+2,y
+	LDA.w !VRAMUploadTblLarge+4,x
+	STA.w !VRAMUploadTblLarge+4,y
+	LDA.w !VRAMUploadTblLarge+6,x
+	STA.w !VRAMUploadTblLarge+6,y
+	LDA.w !VRAMUploadTblLarge+8,x
+	STA.w !VRAMUploadTblLarge+8,y
+	LDA.w !VRAMUploadTblLarge+10,x
+	STA.w !VRAMUploadTblLarge+10,y
+	LDA $00
+	CLC
+	ADC #$000C
+	STA $00
+	BRA .NextEntry
+.NoDelay
+	LDA.w !VRAMUploadTblLarge,x
+	STA $004320
+	LDA.w !VRAMUploadTblLarge+2,x
+	STA $004322
+	LDA.w !VRAMUploadTblLarge+4,x
+	STA $004324
+	LDA.w !VRAMUploadTblLarge+5,x
+	STA $004325
+	LDA.w !VRAMUploadTblLarge+7,x
+	STA $002115
+	LDA.w !VRAMUploadTblLarge+8,x
+	STA $002116
+	LDA.w !VRAMUploadTblLarge-1,x
+	BPL $04
+	LDA $002139
+	SEP #$20
+	LDA #$04
+	STA $00420B
+	REP #$20
+.NextEntry
+	TXA
+	CLC
+	ADC #$000C
+	TAX
+	CMP.l !VRAMUploadTblLargeIndex
+	BCC .LoopJump
+.Break
+	PLB
+	LDA $00
+	STA !VRAMUploadTblLargeIndex
+	RTS
+.LoopJump
+	JMP .Loop
