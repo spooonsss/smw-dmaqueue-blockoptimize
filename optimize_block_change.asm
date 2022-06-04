@@ -54,8 +54,9 @@ BlockChangeRewrite:
 	SEC
 	SBC $1C
 	CLC
-	ADC #$0020
-	CMP #$0120
+	; these values match the scrolling tilemap loader
+	ADC.w #$0010-1 ; show partial blocks
+	CMP.w #$0100 ; tilemap is 32*8 = 0x100 px tall
 	BCS Return
 	LDA $1933|!addr
 	BNE .Layer2
